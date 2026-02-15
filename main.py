@@ -1,5 +1,18 @@
 def calculate_intangible_value(ticker_code):
-    symbol = f"{str(ticker_code).strip()}.T"
+    code_str = str(ticker_code).strip()
+    
+    # --- 修正箇所: ここから ---
+    # スプシから数値取得された場合の小数点(.0)除去
+    if code_str.endswith('.0'):
+        code_str = code_str[:-2]
+        
+    # 日本株コード(数字開始)以外や空欄が渡された場合は、ヘッダーとみなしてスキップ
+    if not code_str or not code_str[0].isdigit():
+        return [None, None, None, None, None, None, None, None, "スキップ(項目名等)"]
+    
+    symbol = f"{code_str}.T"
+    # --- 修正箇所: ここまで ---
+
     ticker = yf.Ticker(symbol)
 
     def _safe_float(x):
