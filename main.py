@@ -1,3 +1,18 @@
+import os
+import json
+import time
+import pandas as pd
+import yfinance as yf
+import gspread
+from google.oauth2.service_account import Credentials
+
+def get_config():
+    # GitHub SecretsからJSON設定を読み込む
+    config_str = os.environ.get("CONFIG_JSON")
+    if not config_str:
+        raise ValueError("GitHub Secrets に CONFIG_JSON が設定されていません。")
+    return json.loads(config_str)
+
 def calculate_intangible_value(ticker_code):
     code_str = str(ticker_code).strip()
     
@@ -284,3 +299,73 @@ def calculate_intangible_value(ticker_code):
 
     except Exception as e:
         return [None, None, None, None, None, None, None, None, f"エラー: {str(e)}"]
+
+def main():
+    config = get_config()
+    
+    # GCP認証とスプレッドシートへの接続
+    scopes = [
+        'https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/drive'
+    ]
+    credentials = Credentials.from_service_account_info(
+        config["gcp_service_account"], scopes=scopes
+    )
+    gc = gspread.authorize(credentials)
+    
+    # 設定されているシート名を確認
+    target_sheet_name = config["sheet_name"]
+    print(f"▼ ターゲットシート名: [{target_sheet_name}] を開きます...")
+    
+    try:
+        sheet = gc.open_by_url(config["spreadsheet_url"]).worksheet(target_sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        print(f"【エラー】スプレッドシート内に「{target_sheet_name}」という名前のタブ(シート)が見つかりません。")
+        print("GitHub Secrets の CONFIG_JSON 内の sheet_name と、実際のタブ名を確認してください。")
+        return
+    
+    # A列のデータをすべて取得
+    col_a_values = sheet.col_values(1)
+    print(f"▼ A列のデータ取得件数: {len(col_a_values)} 件")
+    print(f"▼ 取得した中身: {col_a_values}")
+    
+    # A列が空（または1行目の見出しのみ）の場合は終了
+    if len(col_a_values) <= 1:
+        print("【警告】A列に計算対象の銘柄コードが見つかりませんでした。処理を終了します。")
+        return
+    
+    # ヘッダー書き込み (D1:L1)
+    headers = [["現在値", "時価総額", "有形自己資本", "直近無形投資", "推計無形ストック", "調整後自己資本", "従来PBR", "調整後PBR", "ステータス"]]
+    try:
+        sheet.update(range_name='D1:L1', values=headers)
+        print("▼ D1:L1 にヘッダーを書き込みました。")
+    except Exception as e:
+        # 古いgspreadのバージョンの場合のフォールバック
+        sheet.update('D1:L1', headers)
+        print("▼ D1:L1 にヘッダーを書き込みました。(旧バージョン対応)")
+    
+    updates = []
+    # 2行目以降の銘柄コードを処理
+    for i, code in enumerate(col_a_values[1:], start=2):
+        code_str = str(code).strip()
+        if not code_str:
+            continue
+            
+        print(f"[{i}行目] 銘柄コード {code_str} を処理中...")
+        result_row = calculate_intangible_value(code_str)
+        updates.append({
+            'range': f'D{i}:L{i}',
+            'values': [result_row]
+        })
+        
+        # API制限回避のためのウェイト
+        time.sleep(1)
+        
+    # スプレッドシートへ一括書き込み
+    if updates:
+        print(f"▼ 計算完了。{len(updates)} 件のデータをスプレッドシートに書き込みます...")
+        sheet.batch_update(updates)
+        print("✅ すべての処理が正常に完了しました！")
+
+if __name__ == "__main__":
+    main()
